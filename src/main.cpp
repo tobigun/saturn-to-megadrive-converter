@@ -1,5 +1,14 @@
 #include <Arduino.h>
-#include <Adafruit_NeoPixel.h>
+//#include <Adafruit_NeoPixel.h>
+#include <hardware/gpio.h>
+#include <hardware/timer.h>
+#include <stdint.h>
+
+#define digitalWriteFast(pin, val)  (val ? sio_hw->gpio_set = (1 << pin) : sio_hw->gpio_clr = (1 << pin))
+#define digitalReadFast(pin)        ((1 << pin) & sio_hw->gpio_in)
+
+#define LOW 0
+#define HIGH 1
 
 #define PIN_MD_UP_Z 9
 #define PIN_MD_DOWN_Y 10
@@ -40,7 +49,9 @@ union SaturnButtonState {
     };
 };
 
+#ifdef USE_LED
 static Adafruit_NeoPixel ledPixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
+#endif
 
 static volatile SaturnButtonState saturnButtonsVolatile;
 
@@ -100,30 +111,38 @@ void __not_in_flash_func(selectChanged)() {
     gpio_acknowledge_irq(PIN_MD_SELECT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL);
 }
 
+void initGpio(uint gpio, bool out) {
+    gpio_init(gpio);
+    gpio_set_dir(gpio, out);
+    gpio_pull_up(gpio);
+}
+
 void setup() { 
 #ifndef NO_USB
     Serial.begin(115200);
 #endif
 
+#ifdef USE_LED
     ledPixel.begin();
-    ledPixel.setPixelColor(0, Adafruit_NeoPixel::Color(5, 0, 0));
+    ledPixel.setPixelColor(0, Adafruit_NeoPixel::Color(0, 5, 0));
     ledPixel.show();
+#endif
 
 	// config Saturn pins
-	pinMode(PIN_SATURN_S0, OUTPUT);
-    pinMode(PIN_SATURN_S1, OUTPUT);
-    pinMode(PIN_SATURN_D0, INPUT);
-    pinMode(PIN_SATURN_D1, INPUT);
-    pinMode(PIN_SATURN_D2, INPUT);
-    pinMode(PIN_SATURN_D3, INPUT);
+	initGpio(PIN_SATURN_S0, GPIO_OUT);
+    initGpio(PIN_SATURN_S1, GPIO_OUT);
+    initGpio(PIN_SATURN_D0, GPIO_IN);
+    initGpio(PIN_SATURN_D1, GPIO_IN);
+    initGpio(PIN_SATURN_D2, GPIO_IN);
+    initGpio(PIN_SATURN_D3, GPIO_IN);
 
-    pinMode(PIN_MD_UP_Z, OUTPUT);
-    pinMode(PIN_MD_DOWN_Y, OUTPUT);
-    pinMode(PIN_MD_LEFT_X, OUTPUT);
-    pinMode(PIN_MD_RIGHT_MODE, OUTPUT);
-    pinMode(PIN_MD_B_A, OUTPUT);
-    pinMode(PIN_MD_C_START, OUTPUT);
-    pinMode(PIN_MD_SELECT, INPUT);
+    initGpio(PIN_MD_UP_Z, GPIO_OUT);
+    initGpio(PIN_MD_DOWN_Y, GPIO_OUT);
+    initGpio(PIN_MD_LEFT_X, GPIO_OUT);
+    initGpio(PIN_MD_RIGHT_MODE, GPIO_OUT);
+    initGpio(PIN_MD_B_A, GPIO_OUT);
+    initGpio(PIN_MD_C_START, GPIO_OUT);
+    initGpio(PIN_MD_SELECT, GPIO_IN);
 
     readSaturnController();
 
@@ -141,7 +160,7 @@ void setup() {
 
 void loop() {
     readSaturnController();
-    sleep_ms(1);
+    busy_wait_ms(1);
 }
 
 static void writeSaturnMuxAddress(uint8_t s0, uint8_t s1) {
@@ -162,7 +181,7 @@ static void readSaturnController() {
 	uint8_t muxData[4];
         
     writeSaturnMuxAddress(0, 1);
-    sleep_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE);
     readSaturnMuxData(muxData);
     saturnButtonsVolatile.up = muxData[0];
     saturnButtonsVolatile.down = muxData[1];
@@ -170,7 +189,7 @@ static void readSaturnController() {
     saturnButtonsVolatile.right = muxData[3];
     
     writeSaturnMuxAddress(1, 0);
-    sleep_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE);
     readSaturnMuxData(muxData);
     saturnButtonsVolatile.b = muxData[0];
     saturnButtonsVolatile.c = muxData[1];
@@ -178,7 +197,7 @@ static void readSaturnController() {
     saturnButtonsVolatile.start = muxData[3];
     
     writeSaturnMuxAddress(0, 0);
-    sleep_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE);
     readSaturnMuxData(muxData);
     saturnButtonsVolatile.z = muxData[0];
     saturnButtonsVolatile.y = muxData[1];
@@ -186,7 +205,7 @@ static void readSaturnController() {
     saturnButtonsVolatile.r = muxData[3];
     
     writeSaturnMuxAddress(1, 1);
-    sleep_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE);
     readSaturnMuxData(muxData);
     saturnButtonsVolatile.l = muxData[3];
 
