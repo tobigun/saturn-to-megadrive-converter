@@ -53,10 +53,9 @@ union SaturnButtonState {
 static Adafruit_NeoPixel ledPixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 #endif
 
+static volatile uint8_t selectPending = false;
+static volatile int8_t nextIndex = 0;
 static volatile SaturnButtonState saturnButtonsVolatile;
-
-static volatile int8_t nextIndex = -1;
-static uint8_t indexMask = 7;
 
 static void readSaturnController();
 
@@ -72,43 +71,63 @@ static inline void writeGenesisPins(uint8_t up_z, int8_t down_y, int8_t left_x, 
     sio_hw->gpio_clr = ~mask & PIN_MD_MASK;
 }
 
-static inline void writeGenesisPins(uint8_t index, SaturnButtonState saturnButtons) {
+static inline void writeGenesisPins(uint8_t index, uint8_t select, SaturnButtonState saturnButtons) {
     switch (index) {
-        case 0: case 2: case 4:
-            writeGenesisPins(saturnButtons.up, saturnButtons.down, saturnButtons.left, saturnButtons.right, saturnButtons.b, saturnButtons.c);
+        case 0: case 1:
+            if (select == 0) {
+                writeGenesisPins(saturnButtons.up, saturnButtons.down, LOW, LOW, saturnButtons.a, saturnButtons.start);
+            } else {
+                writeGenesisPins(saturnButtons.up, saturnButtons.down, saturnButtons.left, saturnButtons.right, saturnButtons.b, saturnButtons.c);
+            }
             break;
-        case 1: case 3:
-            writeGenesisPins(saturnButtons.up, saturnButtons.down, LOW, LOW, saturnButtons.a, saturnButtons.start);
+        case 2:
+            if (select == 0) {
+                writeGenesisPins(LOW, LOW, LOW, LOW, saturnButtons.a, saturnButtons.start);
+            } else {
+                writeGenesisPins(saturnButtons.up, saturnButtons.down, saturnButtons.left, saturnButtons.right, saturnButtons.b, saturnButtons.c);
+            }
             break;
-        case 5:
-            writeGenesisPins(LOW, LOW, LOW, LOW, saturnButtons.a, saturnButtons.start);
-            break;
-        case 6:
-            writeGenesisPins(saturnButtons.z, saturnButtons.y, saturnButtons.x, saturnButtons.r /*mode*/, saturnButtons.b, saturnButtons.c);
-            break;
-        case 7:
-            writeGenesisPins(HIGH, HIGH, HIGH, HIGH, saturnButtons.a, saturnButtons.start);
+        case 3:
+            if (select == 0) {
+                writeGenesisPins(HIGH, HIGH, HIGH, HIGH, saturnButtons.a, saturnButtons.start);
+            } else {
+                writeGenesisPins(saturnButtons.z, saturnButtons.y, saturnButtons.x, saturnButtons.r /*mode*/, saturnButtons.b, saturnButtons.c);
+            }
             break;
     }
 }
 
+#define TIMEOUT_US 800 // 800µs
+
 void __not_in_flash_func(selectChanged)() {
     uint8_t select = digitalReadFast(PIN_MD_SELECT) != 0;
-
-    #if 0
-    if (nextIndex < 0) {
-        uint8_t select = digitalRead(PIN_MD_SELECT);
-        //Serial.printf("Select: %d\n", select);
-        nextIndex = select ? 1 : 0;
+    if (select) {
+        nextIndex = (nextIndex + 1) % 4;
     }
-    #endif
 
     SaturnButtonState saturnButtonsLocal = { .value = saturnButtonsVolatile.value };
-    //writeGenesisPins(nextIndex, saturnButtonsLocal);
-    writeGenesisPins(!select, saturnButtonsLocal);
-    nextIndex = (nextIndex + 1) % indexMask;
+    writeGenesisPins(nextIndex, select, saturnButtonsLocal);
 
+    selectPending = true;
     gpio_acknowledge_irq(PIN_MD_SELECT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL);
+}
+
+void checkTimeout(uint32_t nowUs) {
+    static uint32_t lastSelectToggleTimeUs = 0;
+
+    if (selectPending) {
+        selectPending = false;
+        lastSelectToggleTimeUs = nowUs;
+        return;
+    }
+    
+    if (nowUs - lastSelectToggleTimeUs > TIMEOUT_US) {
+        nextIndex = 0;
+        uint8_t select = digitalReadFast(PIN_MD_SELECT) != 0;
+        SaturnButtonState saturnButtonsLocal = { .value = saturnButtonsVolatile.value };
+        writeGenesisPins(nextIndex, select, saturnButtonsLocal);
+        lastSelectToggleTimeUs = nowUs;
+    }
 }
 
 void initGpio(uint gpio, bool out) {
@@ -151,16 +170,21 @@ void setup() {
     indexMask = saturnPressedButtons.r ? 3 : 7;
     #endif
     
-    //attachInterrupt(digitalPinToInterrupt(PIN_MD_SELECT), selectChanged, CHANGE);
-    //gpio_set_irq_enabled_with_callback(PIN_MD_SELECT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, selectChanged);
     irq_set_exclusive_handler(IO_IRQ_BANK0, selectChanged);
     gpio_set_irq_enabled(PIN_MD_SELECT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
     irq_set_enabled(IO_IRQ_BANK0, true);
 }
 
 void loop() {
-    readSaturnController();
-    busy_wait_ms(1);
+    static uint32_t lastControllerReadTimeUs = 0;
+    
+    uint32_t nowUs = time_us_32();
+    checkTimeout(nowUs);
+
+    if (nowUs - lastControllerReadTimeUs > 1000) {
+        readSaturnController();
+        lastControllerReadTimeUs = nowUs;
+    }
 }
 
 static void writeSaturnMuxAddress(uint8_t s0, uint8_t s1) {
