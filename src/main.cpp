@@ -1,11 +1,8 @@
 #include <Arduino.h>
-//#include <Adafruit_NeoPixel.h>
+#include <Adafruit_NeoPixel.h>
 #include <hardware/gpio.h>
 #include <hardware/timer.h>
 #include <stdint.h>
-
-#define digitalWriteFast(pin, val)  (val ? sio_hw->gpio_set = (1 << pin) : sio_hw->gpio_clr = (1 << pin))
-#define digitalReadFast(pin)        ((1 << pin) & sio_hw->gpio_in)
 
 #define LOW 0
 #define HIGH 1
@@ -27,7 +24,11 @@
 #define PIN_SATURN_D3 29
 
 // How many microseconds to wait after setting select lines? (2µs is enough according to the Saturn developer's manual)
-#define SELECT_PAUSE 5
+#define SELECT_PAUSE_US 5
+
+#define TIMEOUT_US 800 // 800µs
+#define SATURN_READ_INTERVAL_US 500
+
 
 union SaturnButtonState {    
     uint16_t value;
@@ -49,65 +50,23 @@ union SaturnButtonState {
     };
 };
 
-#ifdef USE_LED
 static Adafruit_NeoPixel ledPixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
-#endif
 
 static volatile uint8_t selectPending = false;
-static volatile int8_t nextIndex = 0;
-static volatile SaturnButtonState saturnButtonsVolatile;
+static volatile int8_t patternIndex = 0;
+static volatile uint32_t mdButtonStatePatterns[4][2];
 
-static void readSaturnController();
-
-
-static inline void writeGenesisPins(uint8_t up_z, int8_t down_y, int8_t left_x, int8_t right_mode, int8_t b_a, int8_t c_start) {
-    uint32_t mask = (c_start << PIN_MD_C_START) |
-        (b_a << PIN_MD_B_A) |
-        (right_mode << PIN_MD_RIGHT_MODE) |
-        (left_x << PIN_MD_LEFT_X) |
-        (down_y << PIN_MD_DOWN_Y) |
-        (up_z << PIN_MD_UP_Z);
-    sio_hw->gpio_set = mask;
-    sio_hw->gpio_clr = ~mask & PIN_MD_MASK;
-}
-
-static inline void writeGenesisPins(uint8_t index, uint8_t select, SaturnButtonState saturnButtons) {
-    switch (index) {
-        case 0: case 1:
-            if (select == 0) {
-                writeGenesisPins(saturnButtons.up, saturnButtons.down, LOW, LOW, saturnButtons.a, saturnButtons.start);
-            } else {
-                writeGenesisPins(saturnButtons.up, saturnButtons.down, saturnButtons.left, saturnButtons.right, saturnButtons.b, saturnButtons.c);
-            }
-            break;
-        case 2:
-            if (select == 0) {
-                writeGenesisPins(LOW, LOW, LOW, LOW, saturnButtons.a, saturnButtons.start);
-            } else {
-                writeGenesisPins(saturnButtons.up, saturnButtons.down, saturnButtons.left, saturnButtons.right, saturnButtons.b, saturnButtons.c);
-            }
-            break;
-        case 3:
-            if (select == 0) {
-                writeGenesisPins(HIGH, HIGH, HIGH, HIGH, saturnButtons.a, saturnButtons.start);
-            } else {
-                writeGenesisPins(saturnButtons.z, saturnButtons.y, saturnButtons.x, saturnButtons.r /*mode*/, saturnButtons.b, saturnButtons.c);
-            }
-            break;
-    }
-}
-
-#define TIMEOUT_US 800 // 800µs
+static SaturnButtonState readSaturnController();
 
 void __not_in_flash_func(selectChanged)() {
-    uint8_t select = digitalReadFast(PIN_MD_SELECT) != 0;
+    uint32_t gpioIn = sio_hw->gpio_in;
+    uint8_t select = (gpioIn >> PIN_MD_SELECT) & 1;
     if (select) {
-        nextIndex = (nextIndex + 1) % 4;
+        patternIndex = (patternIndex + 1) % 4;
     }
 
-    SaturnButtonState saturnButtonsLocal = { .value = saturnButtonsVolatile.value };
-    writeGenesisPins(nextIndex, select, saturnButtonsLocal);
-
+    sio_hw->gpio_togl = (gpioIn ^ mdButtonStatePatterns[patternIndex][select]) & PIN_MD_MASK;
+    
     selectPending = true;
     gpio_acknowledge_irq(PIN_MD_SELECT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL);
 }
@@ -122,10 +81,10 @@ void checkTimeout(uint32_t nowUs) {
     }
     
     if (nowUs - lastSelectToggleTimeUs > TIMEOUT_US) {
-        nextIndex = 0;
-        uint8_t select = digitalReadFast(PIN_MD_SELECT) != 0;
-        SaturnButtonState saturnButtonsLocal = { .value = saturnButtonsVolatile.value };
-        writeGenesisPins(nextIndex, select, saturnButtonsLocal);
+        uint32_t gpioIn = sio_hw->gpio_in;
+        uint8_t select = (gpioIn >> PIN_MD_SELECT) & 1;
+        patternIndex = 0;
+        sio_hw->gpio_togl = (gpioIn ^ mdButtonStatePatterns[patternIndex][select]) & PIN_MD_MASK;
         lastSelectToggleTimeUs = nowUs;
     }
 }
@@ -141,11 +100,9 @@ void setup() {
     Serial.begin(115200);
 #endif
 
-#ifdef USE_LED
     ledPixel.begin();
     ledPixel.setPixelColor(0, Adafruit_NeoPixel::Color(0, 5, 0));
     ledPixel.show();
-#endif
 
 	// config Saturn pins
 	initGpio(PIN_SATURN_S0, GPIO_OUT);
@@ -175,14 +132,42 @@ void setup() {
     irq_set_enabled(IO_IRQ_BANK0, true);
 }
 
+static inline uint32_t createMDButtonStatePattern(uint8_t up_z, int8_t down_y, int8_t left_x, int8_t right_mode, int8_t b_a, int8_t c_start) {
+    return (c_start << PIN_MD_C_START) |
+        (b_a << PIN_MD_B_A) |
+        (right_mode << PIN_MD_RIGHT_MODE) |
+        (left_x << PIN_MD_LEFT_X) |
+        (down_y << PIN_MD_DOWN_Y) |
+        (up_z << PIN_MD_UP_Z);
+}
+
+static inline void updateMDButtonStatePatterns(SaturnButtonState saturnButtons) {
+    uint32_t defaultLow = createMDButtonStatePattern(saturnButtons.up, saturnButtons.down, LOW, LOW, saturnButtons.a, saturnButtons.start);
+    uint32_t defaultHigh = createMDButtonStatePattern(saturnButtons.up, saturnButtons.down, saturnButtons.left, saturnButtons.right, saturnButtons.b, saturnButtons.c);
+    mdButtonStatePatterns[0][0] = defaultLow;
+    mdButtonStatePatterns[0][1] = defaultHigh;
+    mdButtonStatePatterns[1][0] = defaultLow;
+    mdButtonStatePatterns[1][1] = defaultHigh;
+    mdButtonStatePatterns[2][0] = createMDButtonStatePattern(LOW, LOW, LOW, LOW, saturnButtons.a, saturnButtons.start);
+    mdButtonStatePatterns[2][1] = defaultHigh;
+    mdButtonStatePatterns[3][0] = createMDButtonStatePattern(HIGH, HIGH, HIGH, HIGH, saturnButtons.a, saturnButtons.start);
+    mdButtonStatePatterns[3][1] = createMDButtonStatePattern(saturnButtons.z, saturnButtons.y, saturnButtons.x, saturnButtons.r /*mode*/, saturnButtons.b, saturnButtons.c);
+}
+
+
 void loop() {
     static uint32_t lastControllerReadTimeUs = 0;
+    static SaturnButtonState saturnButtonsLast { .value = 0 }; 
     
     uint32_t nowUs = time_us_32();
     checkTimeout(nowUs);
 
-    if (nowUs - lastControllerReadTimeUs > 1000) {
-        readSaturnController();
+    if (nowUs - lastControllerReadTimeUs > SATURN_READ_INTERVAL_US) {
+        SaturnButtonState saturnButtons = readSaturnController();
+        if (saturnButtons.value != saturnButtonsLast.value) {
+            saturnButtonsLast = saturnButtons;
+            updateMDButtonStatePatterns(saturnButtons);
+        }
         lastControllerReadTimeUs = nowUs;
     }
 }
@@ -201,37 +186,40 @@ static void readSaturnMuxData(uint8_t* muxData) {
     muxData[3] = (input >> PIN_SATURN_D3) & 0x1;
 }
 
-static void readSaturnController() {
-	uint8_t muxData[4];
-        
+static SaturnButtonState readSaturnController() {
+    uint8_t muxData[4];
+
+    SaturnButtonState result;
+
     writeSaturnMuxAddress(0, 1);
-    busy_wait_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE_US);
     readSaturnMuxData(muxData);
-    saturnButtonsVolatile.up = muxData[0];
-    saturnButtonsVolatile.down = muxData[1];
-    saturnButtonsVolatile.left = muxData[2];
-    saturnButtonsVolatile.right = muxData[3];
+    result.up = muxData[0];
+    result.down = muxData[1];
+    result.left = muxData[2];
+    result.right = muxData[3];
     
     writeSaturnMuxAddress(1, 0);
-    busy_wait_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE_US);
     readSaturnMuxData(muxData);
-    saturnButtonsVolatile.b = muxData[0];
-    saturnButtonsVolatile.c = muxData[1];
-    saturnButtonsVolatile.a = muxData[2];
-    saturnButtonsVolatile.start = muxData[3];
+    result.b = muxData[0];
+    result.c = muxData[1];
+    result.a = muxData[2];
+    result.start = muxData[3];
     
     writeSaturnMuxAddress(0, 0);
-    busy_wait_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE_US);
     readSaturnMuxData(muxData);
-    saturnButtonsVolatile.z = muxData[0];
-    saturnButtonsVolatile.y = muxData[1];
-    saturnButtonsVolatile.x = muxData[2];
-    saturnButtonsVolatile.r = muxData[3];
+    result.z = muxData[0];
+    result.y = muxData[1];
+    result.x = muxData[2];
+    result.r = muxData[3];
     
     writeSaturnMuxAddress(1, 1);
-    busy_wait_us(SELECT_PAUSE);
+    busy_wait_us(SELECT_PAUSE_US);
     readSaturnMuxData(muxData);
-    saturnButtonsVolatile.l = muxData[3];
+    result.l = muxData[3];
 
     //Serial.printf("Saturn Buttons: %02x\n", saturnButtonsVolatile.value);
+    return result;
 }
