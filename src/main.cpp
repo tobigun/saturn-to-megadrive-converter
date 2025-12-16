@@ -4,9 +4,6 @@
 #include <hardware/timer.h>
 #include <stdint.h>
 
-#define LOW 0
-#define HIGH 1
-
 #define PIN_MD_UP_Z 9
 #define PIN_MD_DOWN_Y 10
 #define PIN_MD_LEFT_X 11
@@ -52,6 +49,7 @@ union SaturnButtonState {
 
 static Adafruit_NeoPixel ledPixel(1, PIN_NEOPIXEL, NEO_GRB + NEO_KHZ800);
 
+static volatile uint8_t is6ButtonMode = true;
 static volatile uint8_t selectPending = false;
 static volatile int8_t patternIndex = 0;
 static volatile uint32_t mdButtonStatePatterns[4][2];
@@ -61,7 +59,7 @@ static SaturnButtonState readSaturnController();
 void __not_in_flash_func(selectChanged)() {
     uint32_t gpioIn = sio_hw->gpio_in;
     uint8_t select = (gpioIn >> PIN_MD_SELECT) & 1;
-    if (select) {
+    if (select && is6ButtonMode) {
         patternIndex = (patternIndex + 1) % 4;
     }
 
@@ -100,10 +98,6 @@ void setup() {
     Serial.begin(115200);
 #endif
 
-    ledPixel.begin();
-    ledPixel.setPixelColor(0, Adafruit_NeoPixel::Color(0, 5, 0));
-    ledPixel.show();
-
 	// config Saturn pins
 	initGpio(PIN_SATURN_S0, GPIO_OUT);
     initGpio(PIN_SATURN_S1, GPIO_OUT);
@@ -120,12 +114,13 @@ void setup() {
     initGpio(PIN_MD_C_START, GPIO_OUT);
     initGpio(PIN_MD_SELECT, GPIO_IN);
 
-    readSaturnController();
-
-    #if 0
     // activate three button mode if R trigger is pushed
-    indexMask = saturnPressedButtons.r ? 3 : 7;
-    #endif
+    SaturnButtonState saturnPressedButtons = readSaturnController();
+    is6ButtonMode = saturnPressedButtons.r != 0; // right trigger released (=HIGH): 6-button mode, else 3-button mode
+
+    ledPixel.begin();
+    ledPixel.setPixelColor(0, Adafruit_NeoPixel::Color(is6ButtonMode ? 0 : 5, is6ButtonMode ? 5 : 0, 0));
+    ledPixel.show();
     
     irq_set_exclusive_handler(IO_IRQ_BANK0, selectChanged);
     gpio_set_irq_enabled(PIN_MD_SELECT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
