@@ -29,4 +29,4 @@ If you are only interested in a Saturn to USB converter, you do not need to atta
 - [Mednafen: Gamepad implementation](https://github.com/libretro-mirrors/mednafen-git/blob/master/src/md/input/gamepad.cpp)
 - [bootsector/smd-sixbutton-encoder: FPGA Mega Drive 6-button gamepad](https://github.com/bootsector/smd-sixbutton-encoder/tree/master/src)
 - [Retrosix: Mega Drive interface documentation](https://www.retrosix.wiki/controller-interface-sega-mega-drive)
-- [Saturn to Mega Drive Adapter for Arduino by micro](https://circuit-board.de/forum/index.php/Thread/15187-Saturn-Controller-am-Mega-Drive/)
+- [Saturn to Mega Drive Adapter for Arduino ATMega48A by micro](https://circuit-board.de/forum/index.php/Thread/15187-Saturn-Controller-am-Mega-Drive/)
