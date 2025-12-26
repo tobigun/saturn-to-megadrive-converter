@@ -8,11 +8,6 @@
 #include <hardware/timer.h>
 #include <stdint.h>
 
-// https://github.com/libretro-mirrors/mednafen-git/blob/master/src/md/input/gamepad.cpp
-// https://github.com/bootsector/smd-sixbutton-encoder/tree/master/src
-// https://www.retrosix.wiki/controller-interface-sega-mega-drive
-// https://circuit-board.de/forum/index.php/Thread/15187-Saturn-Controller-am-Mega-Drive/
-
 #define PIN_MD_UP_Z 9
 #define PIN_MD_DOWN_Y 10
 #define PIN_MD_LEFT_X 11
